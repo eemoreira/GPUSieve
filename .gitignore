@@ -1,2 +1,5 @@
 .python-version
 plot/*
+a.out
+.*.un~
+.*.swp

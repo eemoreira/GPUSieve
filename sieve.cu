@@ -6,6 +6,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+using ull = unsigned long long;
+
 #define NUM_THREADS_PER_BLOCK 256
 #define SQRT_MAX (1 << 20)
 const int SEGMENT_SIZE_BYTE = 1 << 10;
@@ -13,7 +15,7 @@ const int SEGMENT_SIZE_BIT = 1 << 10;
 
 __device__ int smallPrimes[SQRT_MAX];
 
-__global__ void sieveRangeKernel(unsigned long long *sieve_cnt, uint64_t limit, int num_primes) {
+__global__ void sieveRangeKernel(ull *sieve_cnt, ull limit, int num_primes) {
 
   __shared__ uint8_t is_prime[SEGMENT_SIZE_BYTE];
 
@@ -23,28 +25,34 @@ __global__ void sieveRangeKernel(unsigned long long *sieve_cnt, uint64_t limit, 
 
   __syncthreads();
 
-  const uint64_t L = 1ULL * blockIdx.x * SEGMENT_SIZE_BYTE;
-  const uint64_t R = min(limit, L + SEGMENT_SIZE_BYTE);
+  const ull L = 1ULL * blockIdx.x * SEGMENT_SIZE_BYTE;
+  const ull R = min(limit, L + SEGMENT_SIZE_BYTE);
   for (int k = threadIdx.x; k < num_primes; k += blockDim.x) {
     int prime = smallPrimes[k];
 
-    const uint64_t first =
-        max((uint64_t)prime * prime, (L + prime - 1) / prime * prime);
-    for (uint64_t j = first; j < R; j += prime) {
+    const ull first =
+        max((ull)prime * prime, (L + prime - 1) / prime * prime);
+    for (ull j = first; j < R; j += prime) {
       is_prime[j - L] = 0;
     }
   }
 
   __syncthreads();
-  unsigned long long local_cnt = 0;
+  ull local_cnt = 0;
   for (int i = threadIdx.x; i < SEGMENT_SIZE_BYTE && L + i < R; i += blockDim.x) {
+	  /*
+		 print primes
+	  if (is_prime[i]) {
+		  printf("%llu\n", i + L);
+	  }
+	  */
       local_cnt += is_prime[i];
   }
   atomicAdd(sieve_cnt, local_cnt);
 }
 
-__global__ void sieveRangeBitKernel(unsigned long long *sieve_cnt,
-                                    uint64_t limit, int num_primes) {
+__global__ void sieveRangeBitKernel(ull *sieve_cnt,
+                                    ull limit, int num_primes) {
 
   __shared__ uint32_t is_prime[SEGMENT_SIZE_BIT];
 
@@ -54,14 +62,14 @@ __global__ void sieveRangeBitKernel(unsigned long long *sieve_cnt,
 
   __syncthreads();
 
-  const uint64_t L = 1ULL * blockIdx.x * SEGMENT_SIZE_BIT * 32;
-  const uint64_t R = min(limit, L + SEGMENT_SIZE_BIT * 32);
+  const ull L = 1ULL * blockIdx.x * SEGMENT_SIZE_BIT * 32;
+  const ull R = min(limit, L + SEGMENT_SIZE_BIT * 32);
   for (int k = threadIdx.x; k < num_primes; k += blockDim.x) {
     int prime = smallPrimes[k];
 
-    const uint64_t first =
-        max((uint64_t)prime * prime, (L + prime - 1) / prime * prime);
-    for (uint64_t j = first; j < R; j += prime) {
+    const ull first =
+        max((ull)prime * prime, (L + prime - 1) / prime * prime);
+    for (ull j = first; j < R; j += prime) {
       int offset = (j - L) >> 5;
       int bit = (j - L) & 31;
       atomicAnd(&is_prime[offset], ~(1U << bit));
@@ -69,17 +77,24 @@ __global__ void sieveRangeBitKernel(unsigned long long *sieve_cnt,
   }
 
   __syncthreads();
-  unsigned long long local_cnt = 0;
+  ull local_cnt = 0;
   for (int i = threadIdx.x; i < SEGMENT_SIZE_BIT; i += blockDim.x) {
-    uint64_t x = L + (uint64_t)i * 32;
+    ull x = L + (ull)i * 32;
     if (x >= R) {
       break;
     }
     int val = is_prime[i];
     if (x + 31 >= R) {
-      int valid_bits = 32 - (R - x);
+      int valid_bits = R - x;
       val &= (1U << valid_bits) - 1;
     }
+	/*
+	   print primes
+	for(int b=0;b<32;b++) {
+		int cur = (val>>b);
+		if(cur&1) printf("%llu\n",x+b);
+	}
+	*/
     local_cnt += __popc(val);
   }
   atomicAdd(sieve_cnt, local_cnt);
@@ -91,7 +106,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  const uint64_t N = atoll(argv[1]);
+  const ull N = atoll(argv[1]);
   const char *filename = argv[2];
   // compute small primes up to sqrt(N) on the host
   int sqrtN = (int)std::sqrt(N);
@@ -112,22 +127,22 @@ int main(int argc, char *argv[]) {
   int primes[SQRT_MAX];
   memset(primes, 0, sizeof(primes));
 
-  auto byte_sieve = [&](uint64_t limit) {
+  auto byte_sieve = [&](ull limit) {
     timeval start, end;
     gettimeofday(&start, NULL);
 
     int p = 0;
-    for (uint64_t i = 2; i * i < limit; i++) {
+    for (ull i = 2; i * i < limit; i++) {
       if (is_prime[i]) {
         primes[p++] = i;
       }
     }
 
-    unsigned long long *d_sieve_cnt;
-    unsigned long long sieve_cnt = 0;
+    ull *d_sieve_cnt;
+    ull sieve_cnt = 0;
 
-    cudaMalloc(&d_sieve_cnt, sizeof(unsigned long long));
-    cudaMemcpy(d_sieve_cnt, &sieve_cnt, sizeof(unsigned long long),
+    cudaMalloc(&d_sieve_cnt, sizeof(ull));
+    cudaMemcpy(d_sieve_cnt, &sieve_cnt, sizeof(ull),
                cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(smallPrimes, primes, p * sizeof(int));
     dim3 dimBlock(NUM_THREADS_PER_BLOCK);
@@ -142,8 +157,8 @@ int main(int argc, char *argv[]) {
     printf("sync: %s\n", cudaGetErrorString(err));
 
     cudaMemcpy(&sieve_cnt, d_sieve_cnt, sizeof(int), cudaMemcpyDeviceToHost);
-    uint64_t ans = (uint64_t)sieve_cnt - 2; // exclude 0 and 1
-    printf("Number of primes up to %lu: %lu\n", limit, ans);
+    ull ans = (ull)sieve_cnt - 2; // exclude 0 and 1
+    printf("Number of primes up to %llu: %llu\n", limit, ans);
     cudaFree(d_sieve_cnt);
     gettimeofday(&end, NULL);
     double elapsedTime = (end.tv_sec - start.tv_sec) * 1000.0 +
@@ -153,22 +168,22 @@ int main(int argc, char *argv[]) {
     return elapsedTime;
   };
 
-  auto bit_sieve = [&](uint64_t limit) {
+  auto bit_sieve = [&](ull limit) {
     timeval start, end;
     gettimeofday(&start, NULL);
 
-    unsigned long long *d_sieve_cnt;
-    unsigned long long sieve_cnt = 0;
+    ull *d_sieve_cnt;
+    ull sieve_cnt = 0;
 
     int p = 0;
-    for (uint64_t i = 2; i * i < limit; i++) {
+    for (ull i = 2; i * i < limit; i++) {
       if (is_prime[i]) {
         primes[p++] = i;
       }
     }
 
-    cudaMalloc(&d_sieve_cnt, sizeof(unsigned long long));
-    cudaMemcpy(d_sieve_cnt, &sieve_cnt, sizeof(unsigned long long),
+    cudaMalloc(&d_sieve_cnt, sizeof(ull));
+    cudaMemcpy(d_sieve_cnt, &sieve_cnt, sizeof(ull),
                cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(smallPrimes, primes, p * sizeof(int));
     dim3 dimBlock(NUM_THREADS_PER_BLOCK);
@@ -183,8 +198,8 @@ int main(int argc, char *argv[]) {
     printf("sync: %s\n", cudaGetErrorString(err));
 
     cudaMemcpy(&sieve_cnt, d_sieve_cnt, sizeof(int), cudaMemcpyDeviceToHost);
-    uint64_t ans = (uint64_t)sieve_cnt - 2; // exclude 0 and 1
-    printf("Number of primes up to %lu: %lu\n", limit, ans);
+    ull ans = (ull)sieve_cnt - 2; // exclude 0 and 1
+    printf("Number of primes up to %llu: %llu\n", limit, ans);
     cudaFree(d_sieve_cnt);
     gettimeofday(&end, NULL);
     double elapsedTime = (end.tv_sec - start.tv_sec) * 1000.0 +
@@ -196,38 +211,37 @@ int main(int argc, char *argv[]) {
   FILE *f = fopen(filename, "w");
   fprintf(f, "N,Byte Sieve Time (ms),Bit Sieve Time (ms)\n");
 
+  double byte_time = byte_sieve(N);
+  double bit_time = bit_sieve(N);
 #ifndef SINGLE
   int exp = 2;
-  bool warmup = true;
   while (true) {
-    const uint64_t limit = 1ULL << exp;
+    const ull limit = 1ULL << exp;
     if (limit > N) {
       break;
     }
-    printf("Testing N = %lu\n", limit);
-    printf("Running byte sieve...\n");
-    double byte_time = byte_sieve(limit);
-    printf("====================================\n");
-    printf("Running bit sieve...\n");
+
+    printf("Running byte sieve on limit...\n");
+	printf("Limit: %llu\n",limit);
+    byte_time = byte_sieve(limit);
+    printf("====================================\n ");
+    printf("Running bit sieve on limit...\n");
+	printf("Limit: %llu\n",limit);
     printf("\n\n\n\n");
 
-    double bit_time = bit_sieve(limit);
-    if (warmup) {
-      warmup = false;
-    } else {
-      fprintf(f, "%lu,%.2f,%.2f\n", limit, byte_time, bit_time);
-    }
+    bit_time = bit_sieve(limit);
+    fprintf(f, "%llu,%.2f,%.2f\n", limit, byte_time, bit_time);
     exp += 2;
 
   }
 #else
-  printf("Testing N = %lu\n", N);
+  printf("Testing N = %llu\n", N);
   printf("Running byte sieve...\n");
-  double byte_time = byte_sieve(N);
+  byte_time = byte_sieve(N);
   printf("====================================\n");
   printf("Running bit sieve...\n");
-  double bit_time = bit_sieve(N);
-  fprintf(f, "%lu,%.2f,%.2f\n", N, byte_time, bit_time);
+  bit_time = bit_sieve(N);
+  fprintf(f, "%llu,%.2f,%.2f\n", N, byte_time, bit_time);
   printf("\n\n\n\n");
 #endif
 
